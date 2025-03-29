@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-import type { VbenFormProps } from '@vben-core/form-ui';
 import type {
   VxeGridDefines,
   VxeGridInstance,
@@ -8,6 +7,10 @@ import type {
   VxeGridProps as VxeTableGridProps,
   VxeToolbarPropTypes,
 } from 'vxe-table';
+
+import type { SetupContext } from 'vue';
+
+import type { VbenFormProps } from '@vben-core/form-ui';
 
 import type { ExtendedVxeGridApi, VxeGridProps } from './types';
 
@@ -26,9 +29,11 @@ import { usePriorityValues } from '@vben/hooks';
 import { EmptyIcon } from '@vben/icons';
 import { $t } from '@vben/locales';
 import { usePreferences } from '@vben/preferences';
-import { cloneDeep, cn, mergeWithArrayOverride } from '@vben/utils';
+import { cloneDeep, cn, isEqual, mergeWithArrayOverride } from '@vben/utils';
+
 import { VbenHelpTooltip, VbenLoading } from '@vben-core/shadcn-ui';
 
+import { VxeButton } from 'vxe-pc-ui';
 import { VxeGrid, VxeUI } from 'vxe-table';
 
 import { extendProxyOptions } from './extends';
@@ -66,20 +71,24 @@ const {
 
 const { isMobile } = usePreferences();
 
-const slots = useSlots();
+const slots: SetupContext['slots'] = useSlots();
 
 const [Form, formApi] = useTableForm({
   compact: true,
   handleSubmit: async () => {
-    const formValues = formApi.form.values;
+    const formValues = await formApi.getValues();
     formApi.setLatestSubmissionValues(toRaw(formValues));
     props.api.reload(formValues);
   },
   handleReset: async () => {
+    const prevValues = await formApi.getValues();
     await formApi.resetForm();
-    const formValues = formApi.form.values;
+    const formValues = await formApi.getValues();
     formApi.setLatestSubmissionValues(formValues);
-    props.api.reload(formValues);
+    // 如果值发生了变化，submitOnChange会触发刷新。所以只在submitOnChange为false或者值没有发生变化时，手动刷新
+    if (isEqual(prevValues, formValues) || !formOptions.value?.submitOnChange) {
+      props.api.reload(formValues);
+    }
   },
   commonConfig: {
     componentProps: {
@@ -88,7 +97,7 @@ const [Form, formApi] = useTableForm({
   },
   showCollapseButton: true,
   submitButtonOptions: {
-    content: $t('common.query'),
+    content: computed(() => $t('common.search')),
   },
   wrapperClass: 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3',
 });
@@ -110,7 +119,7 @@ const toolbarOptions = computed(() => {
   const slotTools = slots[TOOLBAR_TOOLS]?.();
   const searchBtn: VxeToolbarPropTypes.ToolConfig = {
     code: 'search',
-    icon: 'vxe-icon--search',
+    icon: 'vxe-icon-search',
     circle: true,
     status: showSearchForm.value ? 'primary' : undefined,
     title: $t('common.search'),
@@ -196,11 +205,15 @@ const options = computed(() => {
 
 function onToolbarToolClick(event: VxeGridDefines.ToolbarToolClickEventParams) {
   if (event.code === 'search') {
-    props.api?.toggleSearchForm?.();
+    onSearchBtnClick();
   }
   (
     gridEvents.value?.toolbarToolClick as VxeGridListeners['toolbarToolClick']
   )?.(event);
+}
+
+function onSearchBtnClick() {
+  props.api?.toggleSearchForm?.();
 }
 
 const events = computed(() => {
@@ -214,7 +227,11 @@ const delegatedSlots = computed(() => {
   const resultSlots: string[] = [];
 
   for (const key of Object.keys(slots)) {
-    if (!['empty', 'form', 'loading', TOOLBAR_ACTIONS].includes(key)) {
+    if (
+      !['empty', 'form', 'loading', TOOLBAR_ACTIONS, TOOLBAR_TOOLS].includes(
+        key,
+      )
+    ) {
       resultSlots.push(key);
     }
   }
@@ -244,7 +261,10 @@ async function init() {
   const autoLoad = defaultGridOptions.proxyConfig?.autoLoad;
   const enableProxyConfig = options.value.proxyConfig?.enabled;
   if (enableProxyConfig && autoLoad) {
-    props.api.grid.commitProxy?.('_init', formApi.form?.values ?? {});
+    props.api.grid.commitProxy?.(
+      '_init',
+      formOptions.value ? ((await formApi.getValues()) ?? {}) : {},
+    );
     // props.api.reload(formApi.form?.values ?? {});
   }
 
@@ -337,13 +357,25 @@ onUnmounted(() => {
       >
         <slot :name="slotName" v-bind="slotProps"></slot>
       </template>
+      <template #toolbar-tools="slotProps">
+        <slot name="toolbar-tools" v-bind="slotProps"></slot>
+        <VxeButton
+          icon="vxe-icon-search"
+          circle
+          class="ml-2"
+          v-if="gridOptions?.toolbarConfig?.search && !!formOptions"
+          :status="showSearchForm ? 'primary' : undefined"
+          :title="$t('common.search')"
+          @click="onSearchBtnClick"
+        />
+      </template>
 
       <!-- form表单 -->
       <template #form>
         <div
           v-if="formOptions"
           v-show="showSearchForm !== false"
-          :class="cn('relative rounded py-3', isCompactForm ? 'pb-6' : 'pb-4')"
+          :class="cn('relative rounded py-3', isCompactForm ? 'pb-8' : 'pb-4')"
         >
           <slot name="form">
             <Form>
